@@ -113,7 +113,10 @@ def test_dvdnet(**args):
                 noise = torch.empty_like(seq).normal_(
                     mean=0, std=args['noise_sigma']).to(device)
                 seqn = seq + noise
-                noisestd = torch.FloatTensor([args['noise_sigma']]).to(device)
+            else:
+                seqn = seq
+
+            noisestd = torch.FloatTensor([args['noise_sigma']]).to(device)
 
             denframes = denoise_seq_dvdnet(seq=seqn,
                                            noise_std=noisestd,
