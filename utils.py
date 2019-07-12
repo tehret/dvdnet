@@ -15,11 +15,13 @@ import os
 import subprocess
 import glob
 import logging
-from random import choices # requires Python >= 3.6
+#from random import choices # requires Python >= 3.6
 import numpy as np
 import cv2
 import torch
 from skimage.measure.simple_metrics import compare_psnr
+
+import iio as piio
 
 IMAGETYPES = ('*.bmp', '*.png', '*.jpg', '*.jpeg', '*.tif') # Supported image types
 
@@ -41,36 +43,42 @@ def get_imagenames(seq_dir, pattern=None):
 	files.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
 	return files
 
-def open_sequence(seq_dir, gray_mode, expand_if_needed=False, max_num_fr=100):
-	r""" Opens a sequence of images and expands it to even sizes if necesary
-	Args:
-		fpath: string, path to image sequence
-		gray_mode: boolean, True indicating if images is to be open are in grayscale mode
-		expand_if_needed: if True, the spatial dimensions will be expanded if
-			size is odd
-		expand_axis0: if True, output will have a fourth dimension
-		max_num_fr: maximum number of frames to load
-	Returns:
-		seq: array of dims [num_frames, C, H, W], C=1 grayscale or C=3 RGB, H and W are even.
-			The image gets normalized gets normalized to the range [0, 1].
-		expanded_h: True if original dim H was odd and image got expanded in this dimension.
-		expanded_w: True if original dim W was odd and image got expanded in this dimension.
-	"""
-	# Get ordered list of filenames
-	files = get_imagenames(seq_dir)
+#def open_sequence(seq_dir, gray_mode, expand_if_needed=False, max_num_fr=100):
+#	r""" Opens a sequence of images and expands it to even sizes if necesary
+#	Args:
+#		fpath: string, path to image sequence
+#		gray_mode: boolean, True indicating if images is to be open are in grayscale mode
+#		expand_if_needed: if True, the spatial dimensions will be expanded if
+#			size is odd
+#		expand_axis0: if True, output will have a fourth dimension
+#		max_num_fr: maximum number of frames to load
+#	Returns:
+#		seq: array of dims [num_frames, C, H, W], C=1 grayscale or C=3 RGB, H and W are even.
+#			The image gets normalized gets normalized to the range [0, 1].
+#		expanded_h: True if original dim H was odd and image got expanded in this dimension.
+#		expanded_w: True if original dim W was odd and image got expanded in this dimension.
+#	"""
+#	# Get ordered list of filenames
+#	files = get_imagenames(seq_dir)
+#
+#	seq_list = []
+#	for fpath in files[0:max_num_fr]:
+#
+#		img, expanded_h, expanded_w = open_image(fpath,\
+#													gray_mode=gray_mode,\
+#													expand_if_needed=expand_if_needed,\
+#													expand_axis0=False)
+#		seq_list.append(img)
+#		seq = np.stack(seq_list, axis=0)
+#
+#	print("\tLoaded sequence ", seq_dir)
+#	return seq, expanded_h, expanded_w
 
-	seq_list = []
-	for fpath in files[0:max_num_fr]:
-
-		img, expanded_h, expanded_w = open_image(fpath,\
-													gray_mode=gray_mode,\
-													expand_if_needed=expand_if_needed,\
-													expand_axis0=False)
-		seq_list.append(img)
-		seq = np.stack(seq_list, axis=0)
-
-	print("\tLoaded sequence ", seq_dir)
-	return seq, expanded_h, expanded_w
+def open_sequence(seq_path, first, last, already_norm):
+    seq_list = []
+    for i in range(first, last+1):
+        seq_list.append(piio.read(seq_path % i).transpose(2, 0, 1) / (1. if already_norm else 255.))
+    return np.stack(seq_list, axis=0)
 
 def open_image(fpath, gray_mode, expand_if_needed=False, expand_axis0=True, normalize_data=True):
 	r""" Opens an image and expands it if necesary
@@ -147,52 +155,52 @@ def batch_psnr(img, imclean, data_range):
 					   data_range=data_range)
 	return psnr/img_cpu.shape[0]
 
-def augment_train_pair(inarr):
-	r"""Performs data augmentation to every image in the input array
-
-	Args:
-		inarr: float32 [0., 1.] normalized (temp_psz+1)xCxHxW array
-	"""
-	assert len(inarr.shape) == 4
-	# define transformations
-#	def scale_img(img):
-#		from random import choice, choices
-#		assert img.max() <= 1.0
+#def augment_train_pair(inarr):
+#	r"""Performs data augmentation to every image in the input array
 #
-#		scales = [0.9, 0.8, 0.7, 0.6]
-#		sca = choice(scales)
-#		# CxHxW to HxWxC, uint8
-#		img = (np.moveaxis(img, 0, 2)*255.).clip(0, 255).astype(np.uint8)
-#		img = cv2.resize(img, (0, 0), fx=sca, fy=sca, interpolation=cv2.INTER_CUBIC)
-#		img = normalize(np.moveaxis(img, 2, 0))
-#		return img
-
-	do_nothing = lambda x: x
-	flipud = lambda x: x[:, ::-1, :]
-	rot90 = lambda x: np.rot90(x, axes=(1, 2))
-	rot90_flipud = lambda x: (np.rot90(x, axes=(1, 2)))[:, ::-1, :]
-	rot180 = lambda x: np.rot90(x, k=2, axes=(1, 2))
-	rot180_flipud = lambda x: (np.rot90(x, k=2, axes=(1, 2)))[:, ::-1, :]
-	rot270 = lambda x: np.rot90(x, k=3, axes=(1, 2))
-	rot270_flipud = lambda x: (np.rot90(x, k=3, axes=(1, 2)))[:, ::-1, :]
-
-	N, _, _, _ = inarr.shape
-
-	# define transformations and their frequency, then pick one.
-# 	aug_list = [do_nothing, scale_img, flipud, rot90, rot90_flipud, \
-# 				rot180, rot180_flipud, rot270, rot270_flipud]
-# 	w_aug = [7, 21, 2, 2, 2, 2, 2, 2, 2]
-	aug_list = [do_nothing, flipud, rot90, rot90_flipud, \
-				rot180, rot180_flipud, rot270, rot270_flipud]
-	w_aug = [7, 4, 4, 4, 4, 4, 4, 4]
-	transf = choices(aug_list, w_aug)
-
-	# transform all images in array
-	tr_list = list()
-	for j in range(N):
-		tr_list.append(transf[0](inarr[j, ...]))
-
-	return np.array(tr_list)
+#	Args:
+#		inarr: float32 [0., 1.] normalized (temp_psz+1)xCxHxW array
+#	"""
+#	assert len(inarr.shape) == 4
+#	# define transformations
+##	def scale_img(img):
+##		from random import choice, choices
+##		assert img.max() <= 1.0
+##
+##		scales = [0.9, 0.8, 0.7, 0.6]
+##		sca = choice(scales)
+##		# CxHxW to HxWxC, uint8
+##		img = (np.moveaxis(img, 0, 2)*255.).clip(0, 255).astype(np.uint8)
+##		img = cv2.resize(img, (0, 0), fx=sca, fy=sca, interpolation=cv2.INTER_CUBIC)
+##		img = normalize(np.moveaxis(img, 2, 0))
+##		return img
+#
+#	do_nothing = lambda x: x
+#	flipud = lambda x: x[:, ::-1, :]
+#	rot90 = lambda x: np.rot90(x, axes=(1, 2))
+#	rot90_flipud = lambda x: (np.rot90(x, axes=(1, 2)))[:, ::-1, :]
+#	rot180 = lambda x: np.rot90(x, k=2, axes=(1, 2))
+#	rot180_flipud = lambda x: (np.rot90(x, k=2, axes=(1, 2)))[:, ::-1, :]
+#	rot270 = lambda x: np.rot90(x, k=3, axes=(1, 2))
+#	rot270_flipud = lambda x: (np.rot90(x, k=3, axes=(1, 2)))[:, ::-1, :]
+#
+#	N, _, _, _ = inarr.shape
+#
+#	# define transformations and their frequency, then pick one.
+## 	aug_list = [do_nothing, scale_img, flipud, rot90, rot90_flipud, \
+## 				rot180, rot180_flipud, rot270, rot270_flipud]
+## 	w_aug = [7, 21, 2, 2, 2, 2, 2, 2, 2]
+#	aug_list = [do_nothing, flipud, rot90, rot90_flipud, \
+#				rot180, rot180_flipud, rot270, rot270_flipud]
+#	w_aug = [7, 4, 4, 4, 4, 4, 4, 4]
+#	transf = choices(aug_list, w_aug)
+#
+#	# transform all images in array
+#	tr_list = list()
+#	for j in range(N):
+#		tr_list.append(transf[0](inarr[j, ...]))
+#
+#	return np.array(tr_list)
 
 def variable_to_cv2_image(invar, conv_rgb_to_bgr=True):
 	r"""Converts a torch.autograd.Variable to an OpenCV image
